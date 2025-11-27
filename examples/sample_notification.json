@@ -1,0 +1,17 @@
+{
+  "value": [
+    {
+      "subscriptionId": "7f105c7d-2dc5-4530-97cd-4e7ae6534c07",
+      "subscriptionExpirationDateTime": "2025-11-22T11:30:00.0000000Z",
+      "changeType": "created",
+      "resource": "teams/d5b3e7b8-9f1c-4d6e-a2b3-8c9d0e1f2a3b/channels/19:abcdefgh12345678@thread.tacv2/messages/1234567890123",
+      "resourceData": {
+        "@odata.type": "#Microsoft.Graph.chatMessage",
+        "@odata.id": "teams/d5b3e7b8-9f1c-4d6e-a2b3-8c9d0e1f2a3b/channels/19:abcdefgh12345678@thread.tacv2/messages/1234567890123",
+        "id": "1234567890123"
+      },
+      "clientState": "your-secret-client-state",
+      "tenantId": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

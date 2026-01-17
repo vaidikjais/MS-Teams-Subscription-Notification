@@ -11,12 +11,14 @@ click==8.3.1
 fastapi==0.121.3
 fastapi-cli==0.0.16
 frozenlist==1.8.0
+gunicorn==23.0.0
 h11==0.16.0
 httptools==0.7.1
 idna==3.11
 markdown-it-py==4.0.0
 mdurl==0.1.2
 multidict==6.7.0
+packaging==25.0
 propcache==0.4.1
 pydantic==2.12.4
 pydantic-core==2.41.5
@@ -38,5 +40,6 @@ urllib3==2.5.0
 uvicorn==0.38.0
 uvloop==0.22.1
 watchfiles==1.1.1
+-e file:///Users/vaidikjaiswal/Desktop/TSM/webhookTeams
 websockets==15.0.1
 yarl==1.22.0

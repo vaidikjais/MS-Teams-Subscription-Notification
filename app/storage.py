@@ -56,7 +56,7 @@ class Database:
         """
         self.engine = create_engine(db_url, echo=False)
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, autocommit=False)
-        Base.metadata.create_all(bind=self.engine)
+        Base.metadata.create_all(bind=self.engine, checkfirst=True)
         logger.info(f"Database initialized at {db_url}")
     
     def get_session(self) -> Session:

@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
-from app.storage import init_db, save_notification, get_message_by_id, get_db
+from app.storage import init_db, save_notification, get_message_by_id, get_db, Message
 from app.schema import (
     NotificationCollection, 
     GraphNotification,

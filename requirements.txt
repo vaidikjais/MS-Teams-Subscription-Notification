@@ -40,6 +40,6 @@ urllib3==2.5.0
 uvicorn==0.38.0
 uvloop==0.22.1
 watchfiles==1.1.1
--e file:///Users/vaidikjaiswal/Desktop/TSM/webhookTeams
 websockets==15.0.1
+yarl==1.22.0
 yarl==1.22.0

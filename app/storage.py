@@ -11,6 +11,7 @@ import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.exc import OperationalError
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,14 @@ class Database:
         """
         self.engine = create_engine(db_url, echo=False)
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, autocommit=False)
-        Base.metadata.create_all(bind=self.engine, checkfirst=True)
+        try:
+            Base.metadata.create_all(bind=self.engine, checkfirst=True)
+        except OperationalError as e:
+            # Handle race condition when multiple workers try to create tables simultaneously
+            if "already exists" in str(e):
+                logger.debug(f"Tables already exist, skipping creation: {e}")
+            else:
+                raise
         logger.info(f"Database initialized at {db_url}")
     
     def get_session(self) -> Session:

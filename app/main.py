@@ -3,7 +3,9 @@ FastAPI application for receiving Microsoft Graph webhook notifications.
 """
 
 import os
+import json
 import logging
+from json import JSONDecodeError
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -13,7 +15,7 @@ from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
-from app.storage import init_db, save_notification
+from app.storage import init_db, save_notification, get_message_by_id, get_db
 from app.schema import (
     NotificationCollection, 
     GraphNotification,
@@ -135,8 +137,20 @@ async def graph_webhook(request: Request):
                 status_code=status.HTTP_200_OK
             )
         
-        # Parse notification body
-        body = await request.json()
+        # Parse notification body safely (handle empty or non-JSON bodies)
+        raw_body = await request.body()
+        if not raw_body:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request body is empty"
+            )
+        try:
+            body = json.loads(raw_body)
+        except JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request body must be valid JSON"
+            )
         logger.debug(f"Received webhook payload: {body}")
         
         # Parse notifications
@@ -336,6 +350,85 @@ async def delete_subscription(subscription_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete subscription: {str(e)}"
+        )
+
+
+@app.get("/messages")
+async def get_all_messages(limit: int = 50):
+    """
+    Retrieve all messages stored in the database.
+    
+    Returns the most recently ingested messages.
+    
+    Query Parameters:
+    - limit: Maximum number of messages to return (default: 50, max: 500)
+    """
+    try:
+        if limit > 500:
+            limit = 500
+        
+        db = get_db()
+        with db.get_session() as session:
+            messages = session.query(Message).order_by(
+                Message.ingested_at.desc()
+            ).limit(limit).all()
+            
+            result = []
+            for msg in messages:
+                result.append({
+                    "id": msg.id,
+                    "message_id": msg.message_id,
+                    "normalized_json": json.loads(msg.normalized_json),
+                    "raw_json": json.loads(msg.raw_json),
+                    "ingested_at": msg.ingested_at.isoformat() if msg.ingested_at else None
+                })
+            
+            logger.info(f"Retrieved {len(result)} messages")
+            return {
+                "count": len(result),
+                "messages": result
+            }
+    
+    except Exception as e:
+        logger.error(f"Failed to retrieve messages: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve messages: {str(e)}"
+        )
+
+
+@app.get("/messages/{message_id}")
+async def get_message(message_id: str):
+    """
+    Retrieve a specific message by Teams message ID.
+    
+    Path Parameters:
+    - message_id: The Teams message ID
+    """
+    try:
+        message = get_message_by_id(message_id)
+        
+        if not message:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Message {message_id} not found"
+            )
+        
+        return {
+            "id": message.id,
+            "message_id": message.message_id,
+            "normalized_json": json.loads(message.normalized_json),
+            "raw_json": json.loads(message.raw_json),
+            "ingested_at": message.ingested_at.isoformat() if message.ingested_at else None
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to retrieve message: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve message: {str(e)}"
         )
 
 

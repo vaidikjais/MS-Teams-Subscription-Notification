@@ -10,12 +10,13 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request, Response, HTTPException, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
 from app.storage import init_db, save_notification, get_message_by_id, get_db, Message
+from app.auth import OAuthHandler
 from app.schema import (
     NotificationCollection, 
     GraphNotification,
@@ -30,6 +31,7 @@ from app.subscription import (
     list_subscriptions as get_subscriptions_list,
     delete_subscription as remove_subscription
 )
+from app.graph_client import GraphClient
 
 # Load environment variables
 load_dotenv()
@@ -47,6 +49,7 @@ class Settings(BaseSettings):
     client_state_secret: str
     db_path: str = "sqlite:///./teams_mvp.db"
     log_level: str = "INFO"
+    oauth_redirect_uri: str = "https://teamspoc.onrender.com/auth/callback"
     
     class Config:
         env_file = ".env"
@@ -55,6 +58,9 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings: Optional[Settings] = None
+oauth_handler: Optional[OAuthHandler] = None
+# State tokens for CSRF protection
+oauth_states: set = set()
 
 
 @asynccontextmanager
@@ -63,8 +69,16 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for FastAPI startup and shutdown.
     """
     # Startup
-    global settings
+    global settings, oauth_handler
     settings = Settings()
+    
+    # Initialize OAuth handler
+    oauth_handler = OAuthHandler(
+        tenant_id=settings.tenant_id,
+        client_id=settings.client_id,
+        client_secret=settings.client_secret,
+        redirect_uri=settings.oauth_redirect_uri
+    )
     
     setup_logging(settings.log_level)
     logger.info("Starting Teams Message Webhook MVP")
@@ -350,6 +364,247 @@ async def delete_subscription(subscription_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete subscription: {str(e)}"
+        )
+
+
+# ============= OAuth Endpoints =============
+
+@app.get("/auth/login")
+async def auth_login():
+    """
+    Initiate OAuth login flow.
+    Redirects user to Microsoft login page.
+    """
+    auth_url, state = oauth_handler.get_authorization_url()
+    oauth_states.add(state)
+    logger.info(f"OAuth login initiated")
+    return RedirectResponse(url=auth_url)
+
+
+@app.get("/auth/callback")
+async def auth_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    """
+    OAuth callback endpoint.
+    Microsoft redirects here after user grants permission.
+    """
+    try:
+        if error:
+            logger.error(f"OAuth error: {error}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"OAuth error: {error}"
+            )
+        
+        if not code or not state:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing code or state parameter"
+            )
+        
+        # Verify state (CSRF protection)
+        if state not in oauth_states:
+            logger.warning(f"Invalid state token: {state}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid state token"
+            )
+        oauth_states.discard(state)
+        
+        # Exchange code for token
+        session = oauth_handler.exchange_code_for_token(code)
+        
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to exchange code for token"
+            )
+        
+        logger.info(f"User authenticated: {session.user_email}")
+        
+        # Return success response with user info
+        return {
+            "status": "success",
+            "message": "Successfully authenticated",
+            "user": {
+                "id": session.user_id,
+                "email": session.user_email
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OAuth callback error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication failed"
+        )
+
+
+@app.post("/auth/logout")
+async def auth_logout(user_id: str):
+    """
+    Logout user by removing their session.
+    
+    Query Parameters:
+    - user_id: The user's Microsoft ID
+    """
+    try:
+        oauth_handler.logout(user_id)
+        return {"status": "logged_out", "user_id": user_id}
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Logout failed"
+        )
+
+
+# ============= User Messages Endpoints (OAuth) =============
+
+@app.get("/api/user/teams")
+async def get_user_teams(user_id: str):
+    """
+    Get all teams the user is a member of.
+    
+    Query Parameters:
+    - user_id: The user's Microsoft ID
+    """
+    try:
+        session = oauth_handler.get_session(user_id)
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not authenticated"
+            )
+        
+        token = oauth_handler.get_valid_token(user_id)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token expired or unavailable"
+            )
+        
+        client = GraphClient(
+            settings.tenant_id,
+            settings.client_id,
+            settings.client_secret,
+            user_token=token
+        )
+        
+        response = client._make_request("GET", "/me/joinedTeams")
+        teams = response.json().get("value", [])
+        
+        logger.info(f"Retrieved {len(teams)} teams for user: {user_id}")
+        
+        return {
+            "count": len(teams),
+            "teams": teams
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to retrieve teams: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve teams: {str(e)}"
+        )
+
+
+@app.get("/api/user/messages")
+async def get_user_messages(user_id: str, team_id: Optional[str] = None, channel_id: Optional[str] = None, limit: int = 50):
+    """
+    Get messages from channels user is a member of.
+    
+    Query Parameters:
+    - user_id: The user's Microsoft ID
+    - team_id: (Optional) Specific team ID
+    - channel_id: (Optional) Specific channel ID in the team
+    - limit: Max messages to return (default 50, max 500)
+    """
+    try:
+        if limit > 500:
+            limit = 500
+        
+        session = oauth_handler.get_session(user_id)
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not authenticated"
+            )
+        
+        token = oauth_handler.get_valid_token(user_id)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token expired or unavailable"
+            )
+        
+        client = GraphClient(
+            settings.tenant_id,
+            settings.client_id,
+            settings.client_secret,
+            user_token=token
+        )
+        
+        # Build Graph API endpoint
+        if team_id and channel_id:
+            # Specific channel
+            endpoint = f"/teams/{team_id}/channels/{channel_id}/messages?$top={limit}"
+        else:
+            # All user's chat messages
+            endpoint = f"/me/chats/getAllMessages?$top={limit}"
+        
+        response = client._make_request("GET", endpoint)
+        messages = response.json().get("value", [])
+        
+        logger.info(f"Retrieved {len(messages)} messages for user: {user_id}")
+        
+        return {
+            "count": len(messages),
+            "messages": messages
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to retrieve messages: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve messages: {str(e)}"
+        )
+
+
+@app.get("/api/user/profile")
+async def get_user_profile(user_id: str):
+    """
+    Get authenticated user's profile info.
+    
+    Query Parameters:
+    - user_id: The user's Microsoft ID
+    """
+    try:
+        session = oauth_handler.get_session(user_id)
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not authenticated"
+            )
+        
+        return {
+            "id": session.user_id,
+            "email": session.user_email,
+            "authenticated_at": session.created_at.isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to retrieve profile: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve profile"
         )
 
 

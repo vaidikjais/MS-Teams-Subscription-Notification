@@ -12,16 +12,24 @@ class GraphClient:
     GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
     TOKEN_URL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
     
-    def __init__(self, tenant_id: str, client_id: str, client_secret: str):
+    def __init__(self, tenant_id: str, client_id: str, client_secret: str, user_token: Optional[str] = None):
         self.tenant_id = tenant_id
         self.client_id = client_id
         self.client_secret = client_secret
-        self._token: Optional[str] = None
+        self._token: Optional[str] = user_token  # User token takes precedence
         self._token_expiry: Optional[datetime] = None
-        logger.info("Graph client initialized")
+        self._is_user_token = user_token is not None  # Flag to track if using user token
+        logger.info(f"Graph client initialized (user_token: {self._is_user_token})")
     
     def get_access_token(self, force_refresh: bool = False) -> str:
         """Get valid access token, refreshing if necessary."""
+        # If using user token, just return it (user tokens are managed by OAuth handler)
+        if self._is_user_token:
+            if self._token:
+                return self._token
+            raise Exception("User token not available")
+        
+        # App-only token logic
         if not force_refresh and self._token and self._token_expiry:
             if datetime.utcnow() < self._token_expiry - timedelta(minutes=5):
                 logger.debug("Using cached access token")
@@ -140,6 +148,10 @@ class GraphClient:
             "expirationDateTime": expiration_str,
             "clientState": client_state
         }
+        
+        # For subscriptions longer than 1 hour, add lifecycle notification URL
+        if expiration_hours > 1:
+            subscription_data["lifecycleNotificationUrl"] = notification_url
         
         logger.info(f"Creating subscription for {resource}")
         response = self._make_request("POST", "/subscriptions", json=subscription_data)

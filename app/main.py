@@ -374,6 +374,8 @@ async def auth_login():
     """
     Initiate OAuth login flow.
     Redirects user to Microsoft login page.
+    
+    Usage: Visit https://teamspoc.onrender.com/auth/login in browser
     """
     auth_url, state = oauth_handler.get_authorization_url()
     oauth_states.add(state)
@@ -384,8 +386,9 @@ async def auth_login():
 @app.get("/auth/callback")
 async def auth_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
     """
-    OAuth callback endpoint.
-    Microsoft redirects here after user grants permission.
+    OAuth callback endpoint (automatic redirect from Microsoft).
+    Exchanges authorization code for access token.
+    Returns user info on success.
     """
     try:
         if error:
@@ -446,8 +449,8 @@ async def auth_logout(user_id: str):
     """
     Logout user by removing their session.
     
-    Query Parameters:
-    - user_id: The user's Microsoft ID
+    Parameters:
+    - user_id: The user's Microsoft ID (from login callback)
     """
     try:
         oauth_handler.logout(user_id)
@@ -460,68 +463,22 @@ async def auth_logout(user_id: str):
         )
 
 
-# ============= User Messages Endpoints (OAuth) =============
-
-@app.get("/api/user/teams")
-async def get_user_teams(user_id: str):
-    """
-    Get all teams the user is a member of.
-    
-    Query Parameters:
-    - user_id: The user's Microsoft ID
-    """
-    try:
-        session = oauth_handler.get_session(user_id)
-        if not session:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not authenticated"
-            )
-        
-        token = oauth_handler.get_valid_token(user_id)
-        if not token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token expired or unavailable"
-            )
-        
-        client = GraphClient(
-            settings.tenant_id,
-            settings.client_id,
-            settings.client_secret,
-            user_token=token
-        )
-        
-        response = client._make_request("GET", "/me/joinedTeams")
-        teams = response.json().get("value", [])
-        
-        logger.info(f"Retrieved {len(teams)} teams for user: {user_id}")
-        
-        return {
-            "count": len(teams),
-            "teams": teams
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to retrieve teams: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve teams: {str(e)}"
-        )
-
+# ============= User Messages Endpoint (OAuth) =============
 
 @app.get("/api/user/messages")
 async def get_user_messages(user_id: str, team_id: Optional[str] = None, channel_id: Optional[str] = None, limit: int = 50):
     """
-    Get messages from channels user is a member of.
+    Get messages from user's Teams and channels.
     
-    Query Parameters:
-    - user_id: The user's Microsoft ID
-    - team_id: (Optional) Specific team ID
-    - channel_id: (Optional) Specific channel ID in the team
+    Parameters:
+    - user_id: The user's Microsoft ID (from login callback) [REQUIRED]
+    - team_id: Specific team ID (optional)
+    - channel_id: Specific channel ID in the team (optional)
     - limit: Max messages to return (default 50, max 500)
+    
+    Examples:
+    - Get all chats: /api/user/messages?user_id=USER_ID
+    - Get channel messages: /api/user/messages?user_id=USER_ID&team_id=TEAM_ID&channel_id=CHANNEL_ID&limit=10
     """
     try:
         if limit > 500:
@@ -531,14 +488,14 @@ async def get_user_messages(user_id: str, team_id: Optional[str] = None, channel
         if not session:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not authenticated"
+                detail="User not authenticated. Call /auth/login first."
             )
         
         token = oauth_handler.get_valid_token(user_id)
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token expired or unavailable"
+                detail="Token expired or unavailable. Please login again."
             )
         
         client = GraphClient(
@@ -550,11 +507,13 @@ async def get_user_messages(user_id: str, team_id: Optional[str] = None, channel
         
         # Build Graph API endpoint
         if team_id and channel_id:
-            # Specific channel
+            # Specific channel messages
             endpoint = f"/teams/{team_id}/channels/{channel_id}/messages?$top={limit}"
+            logger.info(f"Fetching channel messages for user {user_id}: team={team_id}, channel={channel_id}")
         else:
             # All user's chat messages
             endpoint = f"/me/chats/getAllMessages?$top={limit}"
+            logger.info(f"Fetching all chat messages for user {user_id}")
         
         response = client._make_request("GET", endpoint)
         messages = response.json().get("value", [])
@@ -573,38 +532,6 @@ async def get_user_messages(user_id: str, team_id: Optional[str] = None, channel
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve messages: {str(e)}"
-        )
-
-
-@app.get("/api/user/profile")
-async def get_user_profile(user_id: str):
-    """
-    Get authenticated user's profile info.
-    
-    Query Parameters:
-    - user_id: The user's Microsoft ID
-    """
-    try:
-        session = oauth_handler.get_session(user_id)
-        if not session:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not authenticated"
-            )
-        
-        return {
-            "id": session.user_id,
-            "email": session.user_email,
-            "authenticated_at": session.created_at.isoformat()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to retrieve profile: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve profile"
         )
 
 

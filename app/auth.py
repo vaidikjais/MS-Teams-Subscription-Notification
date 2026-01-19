@@ -61,7 +61,6 @@ class OAuthHandler:
     
     # Scopes required for delegated access
     SCOPES = [
-        "ChannelMessage.Read",
         "Chat.Read",
         "User.Read",
         "offline_access"  # For refresh token

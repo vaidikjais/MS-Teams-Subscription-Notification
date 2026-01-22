@@ -138,7 +138,12 @@ class GraphClient:
     def create_subscription(self, resource: str, notification_url: str, 
                            client_state: str, expiration_hours: int = 1) -> Dict[str, Any]:
         """Create Graph change notification subscription."""
-        expiration = datetime.utcnow() + timedelta(hours=expiration_hours)
+        # Microsoft limits channel subscriptions to 10080 minutes (7 days)
+        # Use a slightly lower value to account for processing time
+        max_minutes = 10070  # Slightly under the limit for safety
+        expiration_minutes = min(expiration_hours * 60, max_minutes)
+        
+        expiration = datetime.utcnow() + timedelta(minutes=expiration_minutes)
         expiration_str = expiration.strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
         
         subscription_data = {
@@ -153,6 +158,11 @@ class GraphClient:
         if expiration_hours > 1:
             subscription_data["lifecycleNotificationUrl"] = notification_url
         
+        logger.info(f"Creating subscription for {resource}")
+        response = self._make_request("POST", "/subscriptions", json=subscription_data)
+        subscription = response.json()
+        logger.info(f"Created subscription {subscription.get('id')}")
+        return subscription
         logger.info(f"Creating subscription for {resource}")
         response = self._make_request("POST", "/subscriptions", json=subscription_data)
         subscription = response.json()

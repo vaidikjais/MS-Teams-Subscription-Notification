@@ -338,13 +338,30 @@ async def get_user_messages(user_id: str, team_id: Optional[str] = None, channel
             # Specific channel messages
             endpoint = f"/teams/{team_id}/channels/{channel_id}/messages?$top={limit}"
             logger.info(f"Fetching channel messages for user {user_id}: team={team_id}, channel={channel_id}")
+            response = client._make_request("GET", endpoint)
+            messages = response.json().get("value", [])
         else:
-            # All user's chat messages
-            endpoint = f"/me/chats/getAllMessages?$top={limit}"
-            logger.info(f"Fetching all chat messages for user {user_id}")
-        
-        response = client._make_request("GET", endpoint)
-        messages = response.json().get("value", [])
+            # Get all user's chats first, then fetch messages from each
+            logger.info(f"Fetching chats for user {user_id}")
+            chats_response = client._make_request("GET", "/me/chats?$top=50")
+            chats = chats_response.json().get("value", [])
+            
+            # Fetch messages from each chat
+            messages = []
+            for chat in chats[:min(10, len(chats))]:  # Limit to first 10 chats to avoid timeout
+                chat_id = chat.get("id")
+                if chat_id:
+                    try:
+                        msg_response = client._make_request("GET", f"/me/chats/{chat_id}/messages?$top=5")
+                        chat_messages = msg_response.json().get("value", [])
+                        messages.extend(chat_messages)
+                        if len(messages) >= limit:
+                            break
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch messages from chat {chat_id}: {e}")
+                        continue
+            
+            messages = messages[:limit]
         
         logger.info(f"Retrieved {len(messages)} messages for user: {user_id}")
         

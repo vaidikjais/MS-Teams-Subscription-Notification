@@ -138,9 +138,9 @@ class GraphClient:
     def create_subscription(self, resource: str, notification_url: str, 
                            client_state: str, expiration_hours: int = 1) -> Dict[str, Any]:
         """Create Graph change notification subscription."""
-        # Microsoft limits channel subscriptions to 10080 minutes (7 days)
+        # Microsoft limits delegated channel subscriptions to 3 days (72 hours)
         # Use a slightly lower value to account for processing time
-        max_minutes = 10070  # Slightly under the limit for safety
+        max_minutes = 4300  # Slightly under 72 hours (4320 minutes) for safety
         expiration_minutes = min(expiration_hours * 60, max_minutes)
         
         expiration = datetime.utcnow() + timedelta(minutes=expiration_minutes)

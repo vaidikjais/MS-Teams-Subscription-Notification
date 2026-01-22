@@ -651,7 +651,7 @@ async def create_user_subscription(
     user_id: str,
     team_id: str,
     channel_id: str,
-    expiration_hours: int = 168
+    expiration_hours: int = 72
 ):
     """
     Create a subscription for a specific channel using user's delegated token.
@@ -661,9 +661,9 @@ async def create_user_subscription(
     - user_id: The user's Microsoft ID (from login)
     - team_id: Team ID (e.g., 7e3768a7-4441-4d8e-bbad-208e1ff23e1d)
     - channel_id: Channel ID (e.g., 19:xxx@thread.tacv2)
-    - expiration_hours: Subscription duration (default 168 hours = 7 days, max 168)
+    - expiration_hours: Subscription duration (default 72 hours = 3 days, max 72)
     
-    Note: Microsoft Graph limits channel subscriptions to max 7 days (168 hours).
+    Note: Microsoft Graph limits delegated channel subscriptions to max 3 days (72 hours).
     
     Example:
     POST /api/user/subscriptions?user_id=USER_ID&team_id=TEAM_ID&channel_id=CHANNEL_ID

@@ -51,7 +51,37 @@
     </div>
 
     <div class="section">
-      <h3>Subscriptions (Application Permissions)</h3>
+      <h3>Channel Subscriptions (Delegated - No Admin Needed!)</h3>
+      <div>
+        <label
+          >Team ID:
+          <input
+            id="teamIdInput"
+            value="7e3768a7-4441-4d8e-bbad-208e1ff23e1d"
+            style="width: 350px"
+        /></label>
+      </div>
+      <div>
+        <label
+          >Channel ID:
+          <input
+            id="channelIdInput"
+            value="19:8iOSOoNEa8vKLEexZ9bSVbrTQwt7wQ1Bkqq5rUWTs1Q1@thread.tacv2"
+            style="width: 450px"
+        /></label>
+      </div>
+      <div>
+        <label
+          >Expiration Hours: <input id="expInput2" type="number" value="4320"
+        /></label>
+      </div>
+      <div>
+        <button id="createUserSubBtn">Create My Channel Subscription</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Subscriptions (Application Permissions - Requires Admin)</h3>
       <div>
         <label
           >Resource: <input id="resourceInput" value="/chats/getAllMessages"
@@ -164,12 +194,33 @@
         setOut(data);
       }
 
+      async function createUserSubscription() {
+        const uid = getUserId();
+        if (!uid) {
+          setOut("Missing user_id. Click Login first.");
+          return;
+        }
+        const teamId = document.getElementById("teamIdInput").value;
+        const channelId = document.getElementById("channelIdInput").value;
+        const hours = parseInt(
+          document.getElementById("expInput2").value || "4320",
+          10,
+        );
+        const { ok, data } = await fetchJSON(
+          `${API_BASE}/api/user/subscriptions?user_id=${encodeURIComponent(uid)}&team_id=${encodeURIComponent(teamId)}&channel_id=${encodeURIComponent(channelId)}&expiration_hours=${hours}`,
+          { method: "POST" },
+        );
+        setOut(data);
+      }
+
       document.getElementById("loginBtn").onclick = () => {
         window.location.href = `${API_BASE}/auth/login`;
       };
       document.getElementById("fetchLiveBtn").onclick = fetchLive;
       document.getElementById("ingestBtn").onclick = ingest;
       document.getElementById("listStoredBtn").onclick = listStored;
+      document.getElementById("createUserSubBtn").onclick =
+        createUserSubscription;
       document.getElementById("createSubBtn").onclick = createSubscription;
       document.getElementById("listSubsBtn").onclick = listSubscriptions;
 

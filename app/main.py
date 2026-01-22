@@ -644,3 +644,78 @@ async def delete_subscription_api(subscription_id: str):
     except Exception as e:
         logger.error(f"Delete subscription failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/user/subscriptions")
+async def create_user_subscription(
+    user_id: str,
+    team_id: str,
+    channel_id: str,
+    expiration_hours: int = 4320
+):
+    """
+    Create a subscription for a specific channel using user's delegated token.
+    NO admin consent needed - user must be a member of the channel.
+    
+    Parameters:
+    - user_id: The user's Microsoft ID (from login)
+    - team_id: Team ID (e.g., 7e3768a7-4441-4d8e-bbad-208e1ff23e1d)
+    - channel_id: Channel ID (e.g., 19:xxx@thread.tacv2)
+    - expiration_hours: Subscription duration (default 4320 hours = 6 months)
+    
+    Example:
+    POST /api/user/subscriptions?user_id=USER_ID&team_id=TEAM_ID&channel_id=CHANNEL_ID
+    """
+    try:
+        # Get user's session
+        session_obj = oauth_handler.get_session(user_id)
+        if not session_obj:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not authenticated. Call /auth/login first."
+            )
+        
+        # Get valid delegated token
+        token = oauth_handler.get_valid_token(user_id)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token expired. Please login again."
+            )
+        
+        # Create Graph client with USER's token (delegated)
+        client = GraphClient(
+            settings.tenant_id,
+            settings.client_id,
+            settings.client_secret,
+            user_token=token
+        )
+        
+        # Build resource path
+        resource = f"/teams/{team_id}/channels/{channel_id}/messages"
+        notification_url = f"{settings.ngrok_url.rstrip('/')}/graph-webhook"
+        
+        # Create subscription with delegated permissions
+        logger.info(f"Creating delegated subscription for user {user_id}: {resource}")
+        subscription = client.create_subscription(
+            resource=resource,
+            notification_url=notification_url,
+            client_state=settings.client_state_secret,
+            expiration_hours=expiration_hours
+        )
+        
+        logger.info(f"Delegated subscription created: {subscription.get('id')}")
+        return {
+            "status": "success",
+            "message": "Subscription created with your delegated permissions",
+            "subscription": subscription
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create delegated subscription: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create subscription: {str(e)}"
+        )

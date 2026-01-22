@@ -21,6 +21,8 @@ from app.auth import OAuthHandler
 from app.utils import setup_logging, validate_client_state
 from app.worker import start_worker, stop_worker
 from app.graph_client import GraphClient
+import hmac
+import hashlib
 from app.schema import NotificationCollection
 
 # Load environment variables
@@ -206,13 +208,35 @@ async def auth_login():
     Usage: Visit https://teamspoc.onrender.com/auth/login in browser
     """
     auth_url, state = oauth_handler.get_authorization_url()
-    oauth_states.add(state)
+    # Set signed state cookie to avoid losing in-memory state across instances
+    response = RedirectResponse(url=auth_url)
+    sig = hmac.new(
+        settings.client_state_secret.encode("utf-8"),
+        state.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    response.set_cookie(
+        key="oauth_state",
+        value=state,
+        max_age=600,
+        secure=True,
+        httponly=True,
+        samesite="lax"
+    )
+    response.set_cookie(
+        key="oauth_state_sig",
+        value=sig,
+        max_age=600,
+        secure=True,
+        httponly=True,
+        samesite="lax"
+    )
     logger.info(f"OAuth login initiated")
-    return RedirectResponse(url=auth_url)
+    return response
 
 
 @app.get("/auth/callback")
-async def auth_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+async def auth_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
     """
     OAuth callback endpoint (automatic redirect from Microsoft).
     Exchanges authorization code for access token.
@@ -232,14 +256,26 @@ async def auth_callback(code: Optional[str] = None, state: Optional[str] = None,
                 detail="Missing code or state parameter"
             )
         
-        # Verify state (CSRF protection)
-        if state not in oauth_states:
+        # Verify state using signed cookies (resilient across restarts/load balancing)
+        stored_state = request.cookies.get("oauth_state")
+        stored_sig = request.cookies.get("oauth_state_sig")
+        if not stored_state or stored_state != state:
             logger.warning(f"Invalid state token: {state}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid state token"
             )
-        oauth_states.discard(state)
+        expected_sig = hmac.new(
+            settings.client_state_secret.encode("utf-8"),
+            stored_state.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+        if stored_sig != expected_sig:
+            logger.warning("Invalid state signature")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid state token"
+            )
         
         # Exchange code for token
         session = oauth_handler.exchange_code_for_token(code)

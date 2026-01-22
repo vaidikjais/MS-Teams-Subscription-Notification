@@ -72,12 +72,17 @@
       </div>
       <div>
         <label
-          >Expiration Hours: <input id="expInput2" type="number" value="4320"
+          >Expiration Hours (max 168):
+          <input id="expInput2" type="number" value="168" max="168"
         /></label>
       </div>
       <div>
         <button id="createUserSubBtn">Create My Channel Subscription</button>
       </div>
+      <p style="font-size: 12px; color: #666">
+        Note: Microsoft limits channel subscriptions to 7 days (168 hours).
+        Renew before expiration to continue receiving notifications.
+      </p>
     </div>
 
     <div class="section">

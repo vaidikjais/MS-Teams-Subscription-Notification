@@ -62,7 +62,6 @@ class OAuthHandler:
     # Scopes required for delegated access
     SCOPES = [
         "Chat.Read",
-        "ChannelMessage.Read",  # For Teams channel subscriptions
         "User.Read",
         "offline_access"  # For refresh token
     ]

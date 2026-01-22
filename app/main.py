@@ -16,11 +16,12 @@ from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
-from app.storage import init_db, get_message_by_id, get_db, Message
+from app.storage import init_db, get_message_by_id, get_db, Message, save_notification
 from app.auth import OAuthHandler
-from app.utils import setup_logging
+from app.utils import setup_logging, validate_client_state
 from app.worker import start_worker, stop_worker
 from app.graph_client import GraphClient
+from app.schema import NotificationCollection
 
 # Load environment variables
 load_dotenv()
@@ -125,6 +126,73 @@ async def health():
         "status": "healthy",
         "service": "Teams Message OAuth Client"
     }
+
+
+# ============= Webhook Endpoint =============
+
+@app.post("/graph-webhook")
+async def graph_webhook(request: Request):
+    """
+    Receive Microsoft Graph change notifications.
+    Handles both validation and actual notifications.
+    """
+    # Handle validation request (GET with validationToken)
+    validation_token = request.query_params.get("validationToken")
+    if validation_token:
+        logger.info(f"Webhook validation request received")
+        return PlainTextResponse(content=validation_token, status_code=200)
+    
+    # Handle notification POST
+    try:
+        body = await request.json()
+        logger.info(f"Webhook notification received")
+        
+        # Parse notifications
+        try:
+            notification_collection = NotificationCollection(**body)
+        except ValidationError as e:
+            logger.error(f"Invalid notification format: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid notification format"
+            )
+        
+        # Process each notification
+        for notification in notification_collection.value:
+            # Validate client state
+            if not validate_client_state(
+                notification.client_state,
+                settings.client_state_secret
+            ):
+                logger.warning(f"Invalid client state in notification")
+                continue
+            
+            # Save notification to database for processing
+            notification_id = save_notification(
+                subscription_id=notification.subscription_id,
+                resource=notification.resource,
+                payload=notification.model_dump()
+            )
+            
+            logger.info(
+                f"Saved notification {notification_id} for "
+                f"subscription {notification.subscription_id}"
+            )
+        
+        return {"status": "accepted"}
+        
+    except JSONDecodeError:
+        logger.error("Invalid JSON in webhook request")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON"
+        )
+    except Exception as e:
+        logger.error(f"Webhook processing error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Webhook processing failed"
+        )
 
 
 # ============= OAuth & User Data Endpoints =============

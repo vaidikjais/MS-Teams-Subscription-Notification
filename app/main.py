@@ -7,7 +7,7 @@ import json
 import logging
 from json import JSONDecodeError
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Dict
 
 from fastapi import FastAPI, Request, Response, HTTPException, status
 from fastapi.responses import PlainTextResponse, RedirectResponse
@@ -62,6 +62,8 @@ settings: Optional[Settings] = None
 oauth_handler: Optional[OAuthHandler] = None
 # State tokens for CSRF protection
 oauth_states: set = set()
+# Mapping of subscription_id -> creator_user_id for delegated permissions
+subscription_creators: Dict[str, str] = {}
 
 
 @asynccontextmanager
@@ -92,7 +94,8 @@ async def lifespan(app: FastAPI):
     await start_worker(
         settings.tenant_id,
         settings.client_id,
-        settings.client_secret
+        settings.client_secret,
+        oauth_handler=oauth_handler
     )
     logger.info("Background worker started")
     
@@ -180,11 +183,19 @@ async def graph_webhook(request: Request):
                 logger.warning(f"Invalid client state in notification")
                 continue
             
+            # Look up creator from mapping
+            creator_id = subscription_creators.get(notification.subscription_id)
+            if creator_id:
+                logger.info(f"Found creator {creator_id} for subscription {notification.subscription_id}")
+            else:
+                logger.warning(f"No creator found for subscription {notification.subscription_id}, will use app token")
+            
             # Save notification to database for processing
             notification_id = save_notification(
                 subscription_id=notification.subscription_id,
                 resource=notification.resource,
-                payload=notification.model_dump()
+                payload=notification.model_dump(),
+                creator_id=creator_id
             )
             
             logger.info(
@@ -706,7 +717,13 @@ async def create_user_subscription(
             expiration_hours=expiration_hours
         )
         
-        logger.info(f"Delegated subscription created: {subscription.get('id')}")
+        # Store mapping of subscription -> creator for worker to use delegated token
+        subscription_id = subscription.get('id')
+        if subscription_id:
+            subscription_creators[subscription_id] = user_id
+            logger.info(f"Stored creator mapping: subscription {subscription_id} -> user {user_id}")
+        
+        logger.info(f"Delegated subscription created: {subscription_id}")
         return {
             "status": "success",
             "message": "Subscription created with your delegated permissions",

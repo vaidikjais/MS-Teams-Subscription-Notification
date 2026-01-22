@@ -25,6 +25,7 @@ class Notification(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     subscription_id = Column(String(255), nullable=False, index=True)
+    creator_id = Column(String(255), nullable=True, index=True)  # User who created subscription
     resource = Column(String(500), nullable=False)
     payload_json = Column(Text, nullable=False)
     status = Column(String(50), default="pending", index=True)  # pending, processing, done, failed
@@ -103,7 +104,8 @@ def get_db() -> Database:
 def save_notification(
     subscription_id: str,
     resource: str,
-    payload: dict
+    payload: dict,
+    creator_id: Optional[str] = None
 ) -> int:
     """
     Save a new notification to the database.
@@ -112,6 +114,7 @@ def save_notification(
         subscription_id: Graph subscription ID
         resource: Resource path from notification
         payload: Full notification payload
+        creator_id: User ID who created the subscription (for delegated token)
         
     Returns:
         Notification ID
@@ -120,6 +123,7 @@ def save_notification(
     with db.get_session() as session:
         notification = Notification(
             subscription_id=subscription_id,
+            creator_id=creator_id,
             resource=resource,
             payload_json=json.dumps(payload),
             status="pending",

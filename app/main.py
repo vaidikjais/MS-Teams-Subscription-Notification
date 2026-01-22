@@ -651,10 +651,46 @@ async def delete_subscription_api(subscription_id: str):
             client_secret=settings.client_secret,
             subscription_id=subscription_id,
         )
+        
+        # Remove from creator mapping
+        if subscription_id in subscription_creators:
+            del subscription_creators[subscription_id]
+            logger.info(f"Removed creator mapping for subscription {subscription_id}")
+        
         return {"message": "Subscription deleted successfully"}
     except Exception as e:
         logger.error(f"Delete subscription failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/clear-failed-notifications")
+async def clear_failed_notifications():
+    """
+    Clear all failed notification attempts from the database.
+    Useful after fixing permission issues or before creating new subscriptions.
+    
+    Example: POST /api/admin/clear-failed-notifications
+    """
+    try:
+        db = get_db()
+        with db.get_session() as session:
+            from app.storage import Notification
+            deleted = session.query(Notification).filter(
+                Notification.status.in_(["failed", "processing", "pending"])
+            ).delete()
+            session.commit()
+            logger.info(f"Cleared {deleted} failed/processing/pending notifications")
+            return {
+                "status": "cleared",
+                "deleted_count": deleted,
+                "message": "Old notifications cleared. Ready for new subscriptions."
+            }
+    except Exception as e:
+        logger.error(f"Failed to clear notifications: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to clear notifications: {str(e)}"
+        )
 
 
 @app.post("/api/user/subscriptions")

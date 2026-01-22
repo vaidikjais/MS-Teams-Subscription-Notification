@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Teams Messages UI</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 20px; }
+    button { margin: 6px 0; padding: 8px 12px; }
+    input { padding: 6px; width: 420px; }
+    .section { margin-bottom: 24px; }
+    pre { background: #f6f8fa; padding: 12px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Teams Messages UI</h1>
+
+  <div class="section">
+    <h3>Auth</h3>
+    <div>User ID: <span id="userId"></span></div>
+    <button id="loginBtn">Login with Microsoft</button>
+  </div>
+
+  <div class="section">
+    <h3>Fetch Live Messages (Delegated)</h3>
+    <label>Limit: <input id="limitInput" type="number" value="20"/></label>
+    <div>
+      <button id="fetchLiveBtn">Fetch Live Messages</button>
+      <button id="ingestBtn">Ingest + Store to DB</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>Stored Messages (DB)</h3>
+    <label>Limit: <input id="dbLimitInput" type="number" value="20"/></label>
+    <button id="listStoredBtn">List Stored Messages</button>
+  </div>
+
+  <div class="section">
+    <h3>Subscriptions (Application Permissions)</h3>
+    <div>
+      <label>Resource: <input id="resourceInput" value="/chats/getAllMessages"/></label>
+    </div>
+    <div>
+      <label>Expiration Hours: <input id="expInput" type="number" value="1"/></label>
+    </div>
+    <div>
+      <button id="createSubBtn">Create Subscription</button>
+      <button id="listSubsBtn">List Subscriptions</button>
+    </div>
+  </div>
+
+  <h3>Output</h3>
+  <pre id="out"></pre>
+
+<script>
+  const API_BASE = window.location.origin;
+  const outEl = document.getElementById('out');
+  const userIdEl = document.getElementById('userId');
+
+  function setOut(obj){
+    outEl.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+  }
+
+  function getUserId(){
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('user_id')) return params.get('user_id');
+    const cookies = document.cookie.split(';').map(s=>s.trim());
+    for (const c of cookies){
+      if (c.startsWith('user_id=')) return c.split('=')[1];
+    }
+    return '';
+  }
+
+  async function fetchJSON(url, options){
+    const res = await fetch(url, options);
+    const text = await res.text();
+    try { return { ok: res.ok, data: JSON.parse(text) }; } catch { return { ok: res.ok, data: text }; }
+  }
+
+  async function createSubscription(){
+    const resource = document.getElementById('resourceInput').value;
+    const hours = parseInt(document.getElementById('expInput').value || '1', 10);
+    const { ok, data } = await fetchJSON(`${API_BASE}/subscriptions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resource, expiration_hours: hours })
+    });
+    setOut(data);
+  }
+
+  async function listSubscriptions(){
+    const { ok, data } = await fetchJSON(`${API_BASE}/subscriptions`);
+    setOut(data);
+  }
+
+  async function fetchLive(){
+    const uid = getUserId();
+    if (!uid){ setOut('Missing user_id. Click Login first.'); return; }
+    const limit = parseInt(document.getElementById('limitInput').value || '20', 10);
+    const { ok, data } = await fetchJSON(`${API_BASE}/api/user/messages?user_id=${encodeURIComponent(uid)}&limit=${limit}`);
+    setOut(data);
+  }
+
+  async function ingest(){
+    const uid = getUserId();
+    if (!uid){ setOut('Missing user_id. Click Login first.'); return; }
+    const limit = parseInt(document.getElementById('limitInput').value || '20', 10);
+    const { ok, data } = await fetchJSON(`${API_BASE}/api/user/messages/ingest?user_id=${encodeURIComponent(uid)}&limit=${limit}`, { method: 'POST' });
+    setOut(data);
+  }
+
+  async function listStored(){
+    const limit = parseInt(document.getElementById('dbLimitInput').value || '20', 10);
+    const { ok, data } = await fetchJSON(`${API_BASE}/messages?limit=${limit}`);
+    setOut(data);
+  }
+
+  document.getElementById('loginBtn').onclick = () => {
+    window.location.href = `${API_BASE}/auth/login`;
+  };
+  document.getElementById('fetchLiveBtn').onclick = fetchLive;
+  document.getElementById('ingestBtn').onclick = ingest;
+  document.getElementById('listStoredBtn').onclick = listStored;
+  document.getElementById('createSubBtn').onclick = createSubscription;
+  document.getElementById('listSubsBtn').onclick = listSubscriptions;
+
+  const uid = getUserId();
+  userIdEl.textContent = uid || '(not logged in)';
+</script>
+</body>
+</html>

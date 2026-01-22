@@ -11,16 +11,24 @@ from typing import Optional
 
 from fastapi import FastAPI, Request, Response, HTTPException, status
 from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
-from app.storage import init_db, get_message_by_id, get_db, Message, save_notification
+from app.storage import init_db, get_message_by_id, get_db, Message, save_notification, save_message
 from app.auth import OAuthHandler
 from app.utils import setup_logging, validate_client_state
 from app.worker import start_worker, stop_worker
 from app.graph_client import GraphClient
+from app.schema import NotificationCollection, SubscriptionCreateRequest
+from app.schema import normalize_message
+from app.subscription import (
+    create_teams_subscription,
+    list_subscriptions,
+    delete_subscription as delete_subscription_fn,
+)
 import hmac
 import hashlib
 from app.schema import NotificationCollection
@@ -39,6 +47,7 @@ class Settings(BaseSettings):
     client_secret: str
     ngrok_url: str
     client_state_secret: str
+    disable_oauth_state_validation: bool = False
     db_path: str = "sqlite:///./teams_mvp.db"
     log_level: str = "INFO"
     oauth_redirect_uri: str = "https://teamspoc.onrender.com/auth/callback"
@@ -101,6 +110,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+# Mount frontend UI
+app.mount("/ui", StaticFiles(directory="app/static", html=True), name="ui")
 
 # Add CORS middleware
 app.add_middleware(
@@ -257,25 +268,28 @@ async def auth_callback(request: Request, code: Optional[str] = None, state: Opt
             )
         
         # Verify state using signed cookies (resilient across restarts/load balancing)
-        stored_state = request.cookies.get("oauth_state")
-        stored_sig = request.cookies.get("oauth_state_sig")
-        if not stored_state or stored_state != state:
-            logger.warning(f"Invalid state token: {state}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid state token"
-            )
-        expected_sig = hmac.new(
-            settings.client_state_secret.encode("utf-8"),
-            stored_state.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-        if stored_sig != expected_sig:
-            logger.warning("Invalid state signature")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid state token"
-            )
+        if not settings.disable_oauth_state_validation:
+            stored_state = request.cookies.get("oauth_state")
+            stored_sig = request.cookies.get("oauth_state_sig")
+            if not stored_state or stored_state != state:
+                logger.warning(f"Invalid state token: {state}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid state token"
+                )
+            expected_sig = hmac.new(
+                settings.client_state_secret.encode("utf-8"),
+                stored_state.encode("utf-8"),
+                hashlib.sha256
+            ).hexdigest()
+            if stored_sig != expected_sig:
+                logger.warning("Invalid state signature")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid state token"
+                )
+        else:
+            logger.warning("OAuth state validation disabled via configuration. Enable for production.")
         
         # Exchange code for token
         session = oauth_handler.exchange_code_for_token(code)
@@ -288,15 +302,18 @@ async def auth_callback(request: Request, code: Optional[str] = None, state: Opt
         
         logger.info(f"User authenticated: {session.user_email}")
         
-        # Return success response with user info
-        return {
-            "status": "success",
-            "message": "Successfully authenticated",
-            "user": {
-                "id": session.user_id,
-                "email": session.user_email
-            }
-        }
+        # Redirect to UI with user_id for convenience
+        resp = RedirectResponse(url=f"/ui?user_id={session.user_id}")
+        # Also set cookie with user_id
+        resp.set_cookie(
+            key="user_id",
+            value=session.user_id,
+            max_age=3600,
+            secure=True,
+            httponly=False,
+            samesite="lax"
+        )
+        return resp
         
     except HTTPException:
         raise
@@ -416,6 +433,90 @@ async def get_user_messages(user_id: str, team_id: Optional[str] = None, channel
         )
 
 
+# ============= Ingest User Messages (store to DB) =============
+
+@app.post("/api/user/messages/ingest")
+async def ingest_user_messages(user_id: str, team_id: Optional[str] = None, channel_id: Optional[str] = None, limit: int = 50):
+    """
+    Fetch user's messages (delegated) and store normalized messages in the DB.
+    Uses same logic as /api/user/messages but persists via save_message.
+    """
+    try:
+        if limit > 500:
+            limit = 500
+
+        session_obj = oauth_handler.get_session(user_id)
+        if not session_obj:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not authenticated. Call /auth/login first."
+            )
+
+        token = oauth_handler.get_valid_token(user_id)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token expired or unavailable. Please login again."
+            )
+
+        client = GraphClient(
+            settings.tenant_id,
+            settings.client_id,
+            settings.client_secret,
+            user_token=token
+        )
+
+        fetched = []
+        if team_id and channel_id:
+            endpoint = f"/teams/{team_id}/channels/{channel_id}/messages?$top={limit}"
+            logger.info(f"Ingesting channel messages for user {user_id}: team={team_id}, channel={channel_id}")
+            response = client._make_request("GET", endpoint)
+            fetched = response.json().get("value", [])
+        else:
+            logger.info(f"Ingesting chats for user {user_id}")
+            chats_response = client._make_request("GET", "/me/chats?$top=50")
+            chats = chats_response.json().get("value", [])
+            messages = []
+            for chat in chats[:min(10, len(chats))]:
+                chat_id = chat.get("id")
+                if chat_id:
+                    try:
+                        msg_response = client._make_request("GET", f"/me/chats/{chat_id}/messages?$top=5")
+                        chat_messages = msg_response.json().get("value", [])
+                        messages.extend(chat_messages)
+                        if len(messages) >= limit:
+                            break
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch messages from chat {chat_id}: {e}")
+                        continue
+            fetched = messages[:limit]
+
+        # Normalize and store
+        stored = 0
+        for msg in fetched:
+            try:
+                normalized = normalize_message(msg)
+                save_message(
+                    message_id=normalized.message_id,
+                    normalized_data=normalized.model_dump(mode='json'),
+                    raw_data=msg
+                )
+                stored += 1
+            except Exception as e:
+                logger.warning(f"Failed to normalize/store message: {e}")
+
+        logger.info(f"Stored {stored} messages for user {user_id}")
+        return {"stored": stored}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to ingest messages: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to ingest messages: {str(e)}"
+        )
+
+
 @app.get("/messages")
 async def get_all_messages(limit: int = 50):
     """
@@ -493,3 +594,53 @@ async def get_message(message_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve message: {str(e)}"
         )
+
+
+# ============= Subscription Management Endpoints =============
+
+@app.post("/subscriptions")
+async def create_subscription_api(req: SubscriptionCreateRequest):
+    try:
+        notification_url = f"{settings.ngrok_url.rstrip('/')}/graph-webhook"
+        sub = create_teams_subscription(
+            tenant_id=settings.tenant_id,
+            client_id=settings.client_id,
+            client_secret=settings.client_secret,
+            resource=req.resource,
+            notification_url=notification_url,
+            client_state=settings.client_state_secret,
+            expiration_hours=req.expiration_hours,
+        )
+        return sub
+    except Exception as e:
+        logger.error(f"Create subscription failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/subscriptions")
+async def list_subscriptions_api():
+    try:
+        subs = list_subscriptions(
+            tenant_id=settings.tenant_id,
+            client_id=settings.client_id,
+            client_secret=settings.client_secret,
+        )
+        return {"subscriptions": subs, "count": len(subs)}
+    except Exception as e:
+        logger.error(f"List subscriptions failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/subscriptions/{subscription_id}")
+async def delete_subscription_api(subscription_id: str):
+    try:
+        delete_subscription_fn(
+            tenant_id=settings.tenant_id,
+            client_id=settings.client_id,
+            client_secret=settings.client_secret,
+            subscription_id=subscription_id,
+        )
+        return {"message": "Subscription deleted successfully"}
+    except Exception as e:
+        logger.error(f"Delete subscription failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
